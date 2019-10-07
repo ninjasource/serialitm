@@ -1,0 +1,16 @@
+[package]
+name = "serialitm"
+version = "0.1.0"
+authors = ["David Haig <david@ninjasource.com>"]
+edition = "2018"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/ninjasource/serialitm.git"
+description = "A rust command line tool used to read ITM packets off the serial port"
+keywords = ["itm", "serialport", "serial", "comport"]
+categories = ["embedded", "no-std"]
+readme = "README.md"
+
+[dependencies]
+serialport = "3.2"
+clap = "2.33"
+itm = "0.3"
