@@ -19,7 +19,7 @@ fn main() {
         )
         .arg(
             Arg::with_name("baud")
-                .help("The baud rate to connect at")
+                .help("The baud rate to connect at (e.g. 1000000)")
                 .use_delimiter(false)
                 .required(true)
                 .default_value("1000000")
