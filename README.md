@@ -5,8 +5,7 @@ Example Usage:
 
 serialitm [comport] [baud]
 
-e.g.
-
+e.g. 
 cargo run com3 1000000
 
 or just edit and use run.bat directly.
