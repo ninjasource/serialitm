@@ -1,9 +1,12 @@
 extern crate clap;
+use std::str;
+
+extern crate chrono;
+use chrono::Local;
 
 use clap::{App, AppSettings, Arg};
 use itm::{packet, Decoder};
 use serialport::prelude::*;
-use std::io::{self, Write};
 use std::time::Duration;
 
 fn main() {
@@ -64,19 +67,40 @@ fn main() {
                 "Receiving ITM data (port {}) on {} at {} baud:",
                 &itm_port, &com_port_name, &baud_rate
             );
+            let mut should_write_newline = true;
             let mut decoder = Decoder::new(port, true);
             loop {
                 let p = decoder.read_packet();
                 match p {
                     Ok(p) => match p.kind() {
                         &packet::Kind::Instrumentation(ref i) if i.port() == itm_port => {
-                            io::stdout().write_all(&i.payload()).unwrap();
-                            io::stdout().flush().unwrap();
+                            let payload = &i.payload();
+                            if let Ok(s) = str::from_utf8(payload) {
+                                // remove the new line from the payload (if it exists)
+                                // and inject a timestamp and newline in its place
+                                for (i, line) in s.split("\n").enumerate() {
+                                    if should_write_newline {
+                                        let now = Local::now();
+
+                                        // 24 hour format - YYYY-mm-DD HH:MM:SS.FFF
+                                        print!("{} ", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+                                        should_write_newline = false;
+                                    }
+
+                                    print!("{}", line);
+
+                                    if i > 0 {
+                                        println!();
+                                        should_write_newline = true;
+                                    }
+                                }
+                            }
                         }
                         _ => (),
                     },
-                    Err(_) => {
+                    Err(_e) => {
                         // Do nothing, there are many errors (mostly timeouts when nothing happens)
+                        // eprintln!("Failed to decode packet: {}", _e);
                     }
                 }
             }
