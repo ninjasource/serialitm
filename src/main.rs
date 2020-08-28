@@ -5,11 +5,90 @@ extern crate chrono;
 use chrono::Local;
 
 use clap::{App, AppSettings, Arg};
-use itm::{packet, Decoder};
-use serialport::prelude::*;
-use std::time::Duration;
+use itm::{
+    packet,
+    Decoder,
+    packet::Packet,
+};
+use std::{
+    time::Duration,
+    io::{
+        Error as StdError,
+    },
+};
 
-fn main() {
+use mio::{Events, Poll, PollOpt, Ready, Token};
+#[cfg(unix)]
+use mio::unix::UnixReady;
+
+const SERIAL_TOKEN: Token = Token(0);
+
+#[cfg(unix)]
+fn ready_of_interest() -> Ready {
+    Ready::readable() | UnixReady::hup() | UnixReady::error()
+}
+
+#[cfg(windows)]
+fn ready_of_interest() -> Ready {
+    Ready::readable()
+}
+
+#[cfg(unix)]
+fn is_closed(state: Ready) -> bool {
+    state.contains(UnixReady::hup() | UnixReady::error())
+}
+
+#[cfg(windows)]
+fn is_closed(state: Ready) -> bool {
+    false
+}
+
+#[derive(Debug)]
+enum Error {
+    PollError(StdError),
+    PortClosed,
+    StdError(StdError),
+}
+
+impl From<StdError> for Error {
+    fn from(e: StdError) -> Error {
+        Error::StdError(e)
+    }
+}
+
+fn handle_packet(p: Packet, itm_port: u8, should_write_newline: &mut bool) -> Result<(), Error> {
+    match p.kind() {
+        &packet::Kind::Instrumentation(ref i) if i.port() == itm_port => {
+            let payload = &i.payload();
+            if let Ok(s) = str::from_utf8(payload) {
+                // remove the new line from the payload (if it exists)
+                // and inject a timestamp and newline in its place
+                for (i, line) in s.split("\n").enumerate() {
+                    if *should_write_newline {
+                        let now = Local::now();
+
+                        // 24 hour format - YYYY-mm-DD HH:MM:SS.FFF
+                        print!("{} ", now.format("%Y-%m-%d %H:%M:%S%.3f"));
+                        *should_write_newline = false;
+                    }
+
+                    print!("{}", line);
+
+                    if i > 0 {
+                        println!();
+                        *should_write_newline = true;
+                    }
+                }
+            } else {
+                println!("Invalid payload: {:?}", payload);
+            }
+        },
+        o => println!("o: {:?}", o),
+    }
+    Ok(())
+}
+
+fn main() -> Result<(), Error> {
     // get the command line args
     let matches = App::new("Serial Port ITM Decoder")
         .about("Reads ITM encoded bytes off the serial port and prints them to the console")
@@ -42,65 +121,69 @@ fn main() {
                 }),
         )
         .get_matches();
+
     let com_port_name = matches.value_of("comport").unwrap();
-    let baud_rate = matches.value_of("baud").unwrap();
+
+    let baud_rate = matches
+        .value_of("baud")
+        .unwrap()
+        .parse::<u32>()
+        .expect("Invalid baud rate");
+
     let itm_port = matches
         .value_of("itmport")
         .unwrap() // We supplied a default value
         .parse::<u8>()
         .expect("Arg validator should ensure this parses");
 
-    // setup the serial port
-    let mut settings: SerialPortSettings = Default::default();
-    settings.timeout = Duration::from_millis(10);
-    if let Ok(rate) = baud_rate.parse::<u32>() {
-        settings.baud_rate = rate;
-    } else {
-        eprintln!("Error: Invalid baud rate '{}' specified", baud_rate);
-        ::std::process::exit(1);
-    }
+
+    // Set up mio & mio serialport
+    let poll = Poll::new().unwrap();
+    let mut events = Events::with_capacity(1024);
+    let mut mio_settings = mio_serial::SerialPortSettings::default();
+
+    // Set the baud rate and timout
+    mio_settings.timeout = Duration::from_millis(10);
+    mio_settings.baud_rate = baud_rate;
 
     // open the serial port and begin reading ITM packets
-    match serialport::open_with_settings(&com_port_name, &settings) {
+    match mio_serial::Serial::from_path(&com_port_name, &mio_settings) {
         Ok(port) => {
+            poll.register(&port, SERIAL_TOKEN, ready_of_interest(), PollOpt::edge())
+                .map_err(|e| Error::PollError(e))?;
+
             println!(
-                "Receiving ITM data (port {}) on {} at {} baud:",
+                "Receiving ITM data (port {}) on {} at {:?} baud:",
                 &itm_port, &com_port_name, &baud_rate
             );
+            let mut decoder = Decoder::new(port, false);
             let mut should_write_newline = true;
-            let mut decoder = Decoder::new(port, true);
             loop {
-                let p = decoder.read_packet();
-                match p {
-                    Ok(p) => match p.kind() {
-                        &packet::Kind::Instrumentation(ref i) if i.port() == itm_port => {
-                            let payload = &i.payload();
-                            if let Ok(s) = str::from_utf8(payload) {
-                                // remove the new line from the payload (if it exists)
-                                // and inject a timestamp and newline in its place
-                                for (i, line) in s.split("\n").enumerate() {
-                                    if should_write_newline {
-                                        let now = Local::now();
+                poll.poll(&mut events, None)
+                    .map_err(|e| Error::PollError(e))?;
 
-                                        // 24 hour format - YYYY-mm-DD HH:MM:SS.FFF
-                                        print!("{} ", now.format("%Y-%m-%d %H:%M:%S%.3f"));
-                                        should_write_newline = false;
-                                    }
+                if events.is_empty() {
+                    println!(">>> Read times out");
+                    continue;
+                }
 
-                                    print!("{}", line);
+                for event in events.iter() {
+                    match event.token() {
+                        SERIAL_TOKEN => {
+                            let ready = event.readiness();
+                            if is_closed(ready) {
+                                Err(Error::PortClosed)?;
+                            }
 
-                                    if i > 0 {
-                                        println!();
-                                        should_write_newline = true;
-                                    }
+                            if ready.is_readable() {
+                                // With edge triggered events, we must perform reading until we receive a WouldBlock.
+                                // See https://docs.rs/mio/0.6/mio/struct.Poll.html for details.
+                                while let Ok(p) = decoder.read_packet() {
+                                    handle_packet(p, itm_port, &mut should_write_newline)?;
                                 }
                             }
-                        }
-                        _ => (),
-                    },
-                    Err(_e) => {
-                        // Do nothing, there are many errors (mostly timeouts when nothing happens)
-                        // eprintln!("Failed to decode packet: {}", _e);
+                        },
+                        t => unreachable!("Unexpected token: {:?}", t),
                     }
                 }
             }
