@@ -5,21 +5,12 @@ extern crate chrono;
 use chrono::Local;
 
 use clap::{App, AppSettings, Arg};
-use itm::{
-    packet,
-    Decoder,
-    packet::Packet,
-};
-use std::{
-    time::Duration,
-    io::{
-        Error as StdError,
-    },
-};
+use itm::{packet, packet::Packet, Decoder};
+use std::{io::Error as StdError, time::Duration};
 
-use mio::{Events, Poll, PollOpt, Ready, Token};
 #[cfg(unix)]
 use mio::unix::UnixReady;
+use mio::{Events, Poll, PollOpt, Ready, Token};
 
 const SERIAL_TOKEN: Token = Token(0);
 
@@ -39,7 +30,7 @@ fn is_closed(state: Ready) -> bool {
 }
 
 #[cfg(windows)]
-fn is_closed(state: Ready) -> bool {
+fn is_closed(_state: Ready) -> bool {
     false
 }
 
@@ -82,7 +73,7 @@ fn handle_packet(p: Packet, itm_port: u8, should_write_newline: &mut bool) -> Re
             } else {
                 println!("Invalid payload: {:?}", payload);
             }
-        },
+        }
         o => println!("o: {:?}", o),
     }
     Ok(())
@@ -136,7 +127,6 @@ fn main() -> Result<(), Error> {
         .parse::<u8>()
         .expect("Arg validator should ensure this parses");
 
-
     // Set up mio & mio serialport
     let poll = Poll::new().unwrap();
     let mut events = Events::with_capacity(1024);
@@ -163,7 +153,7 @@ fn main() -> Result<(), Error> {
                     .map_err(|e| Error::PollError(e))?;
 
                 if events.is_empty() {
-                    println!(">>> Read times out");
+                    // Read times out every couple of seconds - no need to log this
                     continue;
                 }
 
@@ -182,7 +172,7 @@ fn main() -> Result<(), Error> {
                                     handle_packet(p, itm_port, &mut should_write_newline)?;
                                 }
                             }
-                        },
+                        }
                         t => unreachable!("Unexpected token: {:?}", t),
                     }
                 }
