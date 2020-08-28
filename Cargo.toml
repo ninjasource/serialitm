@@ -1,7 +1,7 @@
 [package]
 name = "serialitm"
 version = "0.2.2"
-authors = ["David Haig <david@ninjametal.com>"]
+authors = ["David Haig <david@ninjametal.com>", "cs2dsb"]
 edition = "2018"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ninjasource/serialitm.git"
